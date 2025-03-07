@@ -98,11 +98,14 @@
       stroke-linejoin: round;
       transition: all 0.3s ease;
     }
+
     .container {
       text-align: center;
       padding: 2rem 4rem;
       perspective: 1000px;
       transform-style: preserve-3d;
+      position: relative;
+      z-index: 2;
     }
 
     .text-wrapper {
@@ -114,11 +117,9 @@
       cursor: default;
       font-size: 10rem;
       margin: 0;
-      /*letter-spacing: -0.02em;*/
       animation: fadeText 20s ease infinite;
       will-change: transform;
       font-weight: 300;
-      /*text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);*/
     }
 
     p {
@@ -302,73 +303,99 @@
 </div>
 
 <script>
-  const wrapper = document.querySelector('.text-wrapper')
-  const container = document.querySelector('.container')
+  const wrapper = document.querySelector('.text-wrapper');
+  const container = document.querySelector('.container');
   const maxRotation = 10;
   const maxMovement = 15;
 
-  // Curve animation setup
+  // Curve animation setup with optimizations
   const svg = document.querySelector('.background-animation');
   const path = svg.querySelector('path');
-  const numPoints = 48; // More points for smoother curve
-  let points = [];
+  const numPoints = 24; // Reduced number of points for better performance
+  const points = [];
   let baseAngle = 0;
+  let lastTime = 0;
+  const frameInterval = 1000 / 30; // Cap at 30 FPS for performance
+
+  // Pre-calculate constants
+  const TWO_PI = Math.PI * 2;
+  const FOUR_PI = Math.PI * 4;
+
+  // Create lookup tables for sin/cos
+  const sinTable = new Float32Array(360);
+  const cosTable = new Float32Array(360);
+  for (let i = 0; i < 360; i++) {
+    const rad = (i * Math.PI) / 180;
+    sinTable[i] = Math.sin(rad);
+    cosTable[i] = Math.cos(rad);
+  }
+
+  function getSin(rad) {
+    return sinTable[Math.floor((rad * 180 / Math.PI) % 360)];
+  }
+
+  function getCos(rad) {
+    return cosTable[Math.floor((rad * 180 / Math.PI) % 360)];
+  }
 
   function createPoints() {
     svg.setAttribute('viewBox', '-50 -50 200 200');
     svg.setAttribute('preserveAspectRatio', 'none');
 
-    points = Array(numPoints).fill().map((_, index) => {
-      const angle = (index / numPoints) * Math.PI * 4;
-      const radius = 60;
-      return {
-        angle: angle,
+    for (let i = 0; i < numPoints; i++) {
+      points.push({
+        angle: (i / numPoints) * FOUR_PI,
         amplitude: 20 + Math.random() * 10,
-        phase: Math.random() * Math.PI * 2
-      };
-    });
+        phase: Math.random() * TWO_PI
+      });
+    }
   }
 
-  function catmullRomSpline(p0, p1, p2, p3, t) {
+  // Optimized spline calculation
+  const splineCache = new Float32Array(8);
+  function optimizedSpline(p0, p1, p2, p3, t) {
+    splineCache[0] = 2 * p1;
+    splineCache[1] = -p0 + p2;
+    splineCache[2] = 2 * p0 - 5 * p1 + 4 * p2 - p3;
+    splineCache[3] = -p0 + 3 * p1 - 3 * p2 + p3;
+
     const t2 = t * t;
     const t3 = t2 * t;
 
-    return {
-      x: 0.5 * (
-        (2 * p1.x) +
-        (-p0.x + p2.x) * t +
-        (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-        (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
-      ),
-      y: 0.5 * (
-        (2 * p1.y) +
-        (-p0.y + p2.y) * t +
-        (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-        (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
-      )
-    };
+    return 0.5 * (splineCache[0] + splineCache[1] * t + splineCache[2] * t2 + splineCache[3] * t3);
   }
 
-  function updatePath() {
-    const time = Date.now() * 0.000001;
-    baseAngle += 0.00005;
+  // Path string builder optimization
+  const pathParts = [];
+  function updatePath(timestamp) {
+    // Throttle frame rate
+    if (timestamp - lastTime < frameInterval) {
+      requestAnimationFrame(updatePath);
+      return;
+    }
+    lastTime = timestamp;
 
-    // Calculate point positions
-    const positions = points.map((point, i) => {
-      const wave = Math.sin(time * 0.2 + point.phase + i * 0.1) * point.amplitude; // Slowed wave motion
+    const time = timestamp * 0.0001;
+    baseAngle += 0.0005;
+
+    // Calculate positions
+    const positions = [];
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      const wave = getSin(time * 0.2 + point.phase + i * 0.1) * point.amplitude;
       const angle = point.angle + baseAngle;
       const radius = 60 + wave;
 
-      return {
-        x: 50 + Math.cos(angle) * radius,
-        y: 50 + Math.sin(angle) * radius
-      };
-    });
+      positions.push({
+        x: 50 + getCos(angle) * radius,
+        y: 50 + getSin(angle) * radius
+      });
+    }
 
-    // Create a smooth path using Catmull-Rom spline
-    let d = `M ${positions[0].x},${positions[0].y}`;
+    // Build path
+    pathParts.length = 0;
+    pathParts.push(`M ${positions[0].x},${positions[0].y}`);
 
-    // Add extra points at the start and end for smooth closing
     const allPoints = [
       positions[positions.length - 1],
       ...positions,
@@ -376,68 +403,77 @@
       positions[1]
     ];
 
-    // Generate curve segments
+    // Generate optimized curve segments
     for (let i = 0; i < positions.length; i++) {
       const p0 = allPoints[i];
       const p1 = allPoints[i + 1];
       const p2 = allPoints[i + 2];
       const p3 = allPoints[i + 3];
 
-      // Add multiple interpolated points for smoother curve
-      for (let t = 0; t < 1; t += 0.1) {
-        const pt = catmullRomSpline(p0, p1, p2, p3, t);
-        d += ` L ${pt.x},${pt.y}`;
+      for (let t = 0.2; t < 1; t += 0.2) { // Reduced interpolation points
+        const x = optimizedSpline(p0.x, p1.x, p2.x, p3.x, t);
+        const y = optimizedSpline(p0.y, p1.y, p2.y, p3.y, t);
+        pathParts.push(`L ${x},${y}`);
       }
     }
 
-    d += ' Z'; // Close the path
-    path.setAttribute('d', d);
+    pathParts.push('Z');
+    path.setAttribute('d', pathParts.join(' '));
 
     requestAnimationFrame(updatePath);
   }
 
-  createPoints();
-  updatePath();
-
+  // Throttled mousemove handler
+  let mouseMoveTimeout;
   document.addEventListener('mousemove', (e) => {
-    const rect = container.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
+    if (mouseMoveTimeout) return;
+    mouseMoveTimeout = setTimeout(() => {
+      mouseMoveTimeout = null;
 
-    const mouseX = e.clientX;
-    const mouseY = e.clientY;
+      const rect = container.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
 
-    const distanceX = mouseX - centerX;
-    const distanceY = mouseY - centerY;
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
 
-    const maxDistance = Math.max(window.innerWidth, window.innerHeight) / 2;
-    const distance = Math.sqrt(distanceX * distanceX + distanceY * distanceY);
+      const distanceX = mouseX - centerX;
+      const distanceY = mouseY - centerY;
 
-    const influence = Math.max(0, 1 - distance / maxDistance);
+      const maxDistance = Math.max(window.innerWidth, window.innerHeight) / 2;
+      const distance = Math.sqrt(distanceX * distanceX + distanceY * distanceY);
 
-    const rotateX = -(distanceY / maxDistance) * maxRotation * influence;
-    const rotateY = (distanceX / maxDistance) * maxRotation * influence;
-    const translateX = (distanceX / maxDistance) * maxMovement * influence;
-    const translateY = (distanceY / maxDistance) * maxMovement * influence;
+      const influence = Math.max(0, 1 - distance / maxDistance);
 
-    wrapper.style.transform = `
-                translate3d(${translateX}px, ${translateY}px, 0)
-                rotateX(${rotateX}deg)
-                rotateY(${rotateY}deg)
-            `;
+      const rotateX = -(distanceY / maxDistance) * maxRotation * influence;
+      const rotateY = (distanceX / maxDistance) * maxRotation * influence;
+      const translateX = (distanceX / maxDistance) * maxMovement * influence;
+      const translateY = (distanceY / maxDistance) * maxMovement * influence;
 
-    // Subtle influence on curve
-    const dx = (mouseX / window.innerWidth - 0.5) * 2;
-    const dy = (mouseY / window.innerHeight - 0.5) * 2;
-    points.forEach(point => {
-      point.amplitude = 20 + (dx + dy) * 10;
-    });
-  })
+      wrapper.style.transform = `
+                    translate3d(${translateX}px, ${translateY}px, 0)
+                    rotateX(${rotateX}deg)
+                    rotateY(${rotateY}deg)
+                `;
+
+      // Subtle influence on curve
+      const dx = (mouseX / window.innerWidth - 0.5) * 2;
+      const dy = (mouseY / window.innerHeight - 0.5) * 2;
+      const newAmplitude = 20 + (dx + dy) * 10;
+
+      for (let i = 0; i < points.length; i++) {
+        points[i].amplitude += (newAmplitude - points[i].amplitude) * 0.1;
+      }
+    }, 16); // ~60fps throttle
+  });
 
   // Reset position when mouse leaves
   document.addEventListener('mouseleave', () => {
-    wrapper.style.transform = 'translate3d(0, 0, 0) rotateX(0) rotateY(0)'
-  })
+    wrapper.style.transform = 'translate3d(0, 0, 0) rotateX(0) rotateY(0)';
+  });
+
+  createPoints();
+  requestAnimationFrame(updatePath);
 </script>
 </body>
 </html>
