@@ -114,8 +114,8 @@
     }
 
     h1 {
+      font-size: clamp(3rem, 15vw, 10rem);
       cursor: default;
-      font-size: 10rem;
       margin: 0;
       animation: fadeText 20s ease infinite;
       will-change: transform;
@@ -123,9 +123,9 @@
     }
 
     p {
+      font-size: clamp(0.875rem, 3vw, 1.2rem);
+      margin-top: clamp(0.5rem, 2vw, 1rem);
       cursor: default;
-      font-size: 1.2rem;
-      margin-top: 1rem;
       opacity: 0.9;
       will-change: transform;
       /*letter-spacing: 0.1em;*/
@@ -162,22 +162,13 @@
       font-size: 10px;
     }
 
-    #l-t {
-      margin-top: 50%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      justify-content: center;
-    }
-
     .x-img {
       width: 100px;
       height: 160px;
       transform-origin: bottom center;
       opacity: 0;
       position: absolute;
-      top: 0;
+      top: -20px;
       left: 50%;
       margin-left: -50px;
       animation: 2s frot infinite,
@@ -226,15 +217,6 @@
       }
     }
 
-    #map-buffer {
-      height: 100vh;
-      opacity: 0;
-      position: absolute;
-      width: 100%;
-    }
-
-    .images {
-    }
   </style>
 </head>
 <body>
@@ -305,43 +287,46 @@
 <script>
   const wrapper = document.querySelector('.text-wrapper');
   const container = document.querySelector('.container');
-  const maxRotation = 10;
-  const maxMovement = 15;
-
-  // Curve animation setup with optimizations
   const svg = document.querySelector('.background-animation');
   const path = svg.querySelector('path');
-  const numPoints = 24; // Reduced number of points for better performance
+
+  // Reduced configuration values
+  const maxRotation = 10;
+  const maxMovement = 15;
+  const numPoints = 16; // Further reduced for better performance
+  const frameInterval = 1000 / 20; // Cap at 20 FPS for slow devices
   const points = [];
   let baseAngle = 0;
   let lastTime = 0;
-  const frameInterval = 1000 / 30; // Cap at 30 FPS for performance
+  let animationFrameId = null;
+  let isVisible = true;
 
   // Pre-calculate constants
   const TWO_PI = Math.PI * 2;
   const FOUR_PI = Math.PI * 4;
 
-  // Create lookup tables for sin/cos
-  const sinTable = new Float32Array(360);
-  const cosTable = new Float32Array(360);
-  for (let i = 0; i < 360; i++) {
-    const rad = (i * Math.PI) / 180;
+  // Optimize sin/cos with smaller lookup tables
+  const tableSize = 180; // Reduced table size
+  const sinTable = new Float32Array(tableSize);
+  const cosTable = new Float32Array(tableSize);
+  for (let i = 0; i < tableSize; i++) {
+    const rad = (i * TWO_PI) / tableSize;
     sinTable[i] = Math.sin(rad);
     cosTable[i] = Math.cos(rad);
   }
 
-  function getSin(rad) {
-    return sinTable[Math.floor((rad * 180 / Math.PI) % 360)];
+  // Faster lookup function
+  function fastTrig(rad, table) {
+    const index = Math.floor((rad % TWO_PI) / TWO_PI * tableSize) % tableSize;
+    return table[index >= 0 ? index : index + tableSize];
   }
 
-  function getCos(rad) {
-    return cosTable[Math.floor((rad * 180 / Math.PI) % 360)];
-  }
-
-  function createPoints() {
+  // Setup function - runs once
+  function setup() {
     svg.setAttribute('viewBox', '-50 -50 200 200');
     svg.setAttribute('preserveAspectRatio', 'none');
 
+    // Create initial points
     for (let i = 0; i < numPoints; i++) {
       points.push({
         angle: (i / numPoints) * FOUR_PI,
@@ -349,131 +334,153 @@
         phase: Math.random() * TWO_PI
       });
     }
+
+    // Start animation
+    requestAnimationFrame(updatePath);
+
+    // Set up visibility detection
+    setupVisibilityDetection();
   }
 
-  // Optimized spline calculation
-  const splineCache = new Float32Array(8);
-  function optimizedSpline(p0, p1, p2, p3, t) {
-    splineCache[0] = 2 * p1;
-    splineCache[1] = -p0 + p2;
-    splineCache[2] = 2 * p0 - 5 * p1 + 4 * p2 - p3;
-    splineCache[3] = -p0 + 3 * p1 - 3 * p2 + p3;
+  // Visibility detection to pause animation when not visible
+  function setupVisibilityDetection() {
+    // Page visibility API
+    document.addEventListener('visibilitychange', () => {
+      isVisible = document.visibilityState === 'visible';
+      if (isVisible && !animationFrameId) {
+        animationFrameId = requestAnimationFrame(updatePath);
+      }
+    });
 
-    const t2 = t * t;
-    const t3 = t2 * t;
+    // Intersection Observer for element visibility
+    if ('IntersectionObserver' in window) {
+      const observer = new IntersectionObserver((entries) => {
+        isVisible = entries[0].isIntersecting;
+        if (isVisible && !animationFrameId) {
+          animationFrameId = requestAnimationFrame(updatePath);
+        }
+      }, { threshold: 0.1 });
 
-    return 0.5 * (splineCache[0] + splineCache[1] * t + splineCache[2] * t2 + splineCache[3] * t3);
+      observer.observe(svg);
+    }
   }
 
-  // Path string builder optimization
-  const pathParts = [];
+  // Optimized path updating
   function updatePath(timestamp) {
+    animationFrameId = null;
+
+    // Skip if not visible
+    if (!isVisible) return;
+
     // Throttle frame rate
     if (timestamp - lastTime < frameInterval) {
-      requestAnimationFrame(updatePath);
+      animationFrameId = requestAnimationFrame(updatePath);
       return;
     }
-    lastTime = timestamp;
 
+    lastTime = timestamp;
     const time = timestamp * 0.0001;
     baseAngle += 0.0005;
 
-    // Calculate positions
+    // Calculate positions (reduced calculations)
     const positions = [];
     for (let i = 0; i < points.length; i++) {
       const point = points[i];
-      const wave = getSin(time * 0.2 + point.phase + i * 0.1) * point.amplitude;
+      const wave = fastTrig(time * 0.2 + point.phase + i * 0.1, sinTable) * point.amplitude;
       const angle = point.angle + baseAngle;
       const radius = 60 + wave;
 
       positions.push({
-        x: 50 + getCos(angle) * radius,
-        y: 50 + getSin(angle) * radius
+        x: 50 + fastTrig(angle, cosTable) * radius,
+        y: 50 + fastTrig(angle, sinTable) * radius
       });
     }
 
-    // Build path
-    pathParts.length = 0;
-    pathParts.push(`M ${positions[0].x},${positions[0].y}`);
+    // Build path with fewer points
+    let pathString = `M ${positions[0].x.toFixed(1)},${positions[0].y.toFixed(1)}`;
 
-    const allPoints = [
-      positions[positions.length - 1],
-      ...positions,
-      positions[0],
-      positions[1]
-    ];
-
-    // Generate optimized curve segments
-    for (let i = 0; i < positions.length; i++) {
-      const p0 = allPoints[i];
-      const p1 = allPoints[i + 1];
-      const p2 = allPoints[i + 2];
-      const p3 = allPoints[i + 3];
-
-      for (let t = 0.2; t < 1; t += 0.2) { // Reduced interpolation points
-        const x = optimizedSpline(p0.x, p1.x, p2.x, p3.x, t);
-        const y = optimizedSpline(p0.y, p1.y, p2.y, p3.y, t);
-        pathParts.push(`L ${x},${y}`);
-      }
+    // Simpler curve approach - just connect points directly for low-end devices
+    for (let i = 1; i < positions.length; i++) {
+      pathString += ` L ${positions[i].x.toFixed(1)},${positions[i].y.toFixed(1)}`;
     }
 
-    pathParts.push('Z');
-    path.setAttribute('d', pathParts.join(' '));
+    pathString += ' Z';
+    path.setAttribute('d', pathString);
 
-    requestAnimationFrame(updatePath);
+    // Request next frame
+    animationFrameId = requestAnimationFrame(updatePath);
   }
 
-  // Throttled mousemove handler
-  let mouseMoveTimeout;
-  document.addEventListener('mousemove', (e) => {
-    if (mouseMoveTimeout) return;
-    mouseMoveTimeout = setTimeout(() => {
-      mouseMoveTimeout = null;
+  // Highly optimized mouse handling with debouncing
+  let mouseTimer = null;
+  let lastMouseEvent = null;
 
-      const rect = container.getBoundingClientRect();
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
+  function handleMouseMove(e) {
+    lastMouseEvent = e;
 
-      const mouseX = e.clientX;
-      const mouseY = e.clientY;
+    // Debounce for performance
+    if (!mouseTimer) {
+      mouseTimer = setTimeout(() => {
+        mouseTimer = null;
+        if (lastMouseEvent) processMouseMove(lastMouseEvent);
+      }, 50); // Higher debounce for slower devices
+    }
+  }
 
-      const distanceX = mouseX - centerX;
-      const distanceY = mouseY - centerY;
+  function processMouseMove(e) {
+    const rect = container.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
 
-      const maxDistance = Math.max(window.innerWidth, window.innerHeight) / 2;
-      const distance = Math.sqrt(distanceX * distanceX + distanceY * distanceY);
+    const distanceX = e.clientX - centerX;
+    const distanceY = e.clientY - centerY;
 
-      const influence = Math.max(0, 1 - distance / maxDistance);
+    const maxDistance = Math.max(window.innerWidth, window.innerHeight) / 2;
 
-      const rotateX = -(distanceY / maxDistance) * maxRotation * influence;
-      const rotateY = (distanceX / maxDistance) * maxRotation * influence;
-      const translateX = (distanceX / maxDistance) * maxMovement * influence;
-      const translateY = (distanceY / maxDistance) * maxMovement * influence;
+    // Simplified calculation (avoid square root for performance)
+    const distanceSquared = distanceX * distanceX + distanceY * distanceY;
+    const maxDistanceSquared = maxDistance * maxDistance;
+    const influence = Math.max(0, 1 - distanceSquared / maxDistanceSquared);
 
-      wrapper.style.transform = `
-                    translate3d(${translateX}px, ${translateY}px, 0)
-                    rotateX(${rotateX}deg)
-                    rotateY(${rotateY}deg)
-                `;
+    const rotateX = -(distanceY / maxDistance) * maxRotation * influence;
+    const rotateY = (distanceX / maxDistance) * maxRotation * influence;
+    const translateX = (distanceX / maxDistance) * maxMovement * influence;
+    const translateY = (distanceY / maxDistance) * maxMovement * influence;
 
-      // Subtle influence on curve
-      const dx = (mouseX / window.innerWidth - 0.5) * 2;
-      const dy = (mouseY / window.innerHeight - 0.5) * 2;
-      const newAmplitude = 20 + (dx + dy) * 10;
+    // Use translate3d for hardware acceleration
+    wrapper.style.transform = `
+      translate3d(${translateX.toFixed(1)}px, ${translateY.toFixed(1)}px, 0)
+      rotateX(${rotateX.toFixed(1)}deg)
+      rotateY(${rotateY.toFixed(1)}deg)
+  `;
 
-      for (let i = 0; i < points.length; i++) {
-        points[i].amplitude += (newAmplitude - points[i].amplitude) * 0.1;
+    // Simplified amplitude adjustment (only update every other point)
+    if (influence > 0.1) {
+      const newAmplitude = 20 + (distanceX / window.innerWidth + distanceY / window.innerHeight) * 5;
+
+      for (let i = 0; i < points.length; i += 2) {
+        points[i].amplitude += (newAmplitude - points[i].amplitude) * 0.05;
       }
-    }, 16); // ~60fps throttle
-  });
+    }
+  }
 
-  // Reset position when mouse leaves
-  document.addEventListener('mouseleave', () => {
-    wrapper.style.transform = 'translate3d(0, 0, 0) rotateX(0) rotateY(0)';
-  });
+  // Reset position with debouncing
+  let resetTimer = null;
+  function handleMouseLeave() {
+    if (resetTimer) return;
 
-  createPoints();
-  requestAnimationFrame(updatePath);
+    resetTimer = setTimeout(() => {
+      resetTimer = null;
+      wrapper.style.transform = 'translate3d(0, 0, 0) rotateX(0) rotateY(0)';
+    }, 100);
+  }
+
+  // Use passive event listeners for better performance
+  document.addEventListener('mousemove', handleMouseMove, { passive: true });
+  document.addEventListener('mouseleave', handleMouseLeave, { passive: true });
+
+  // Initialize
+  setup();
 </script>
 </body>
 </html>
